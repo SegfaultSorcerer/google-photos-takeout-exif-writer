@@ -23,6 +23,13 @@ public final class SidecarParser {
       Double lon = doubleAt(gd, "longitude");
       Double alt = doubleAt(gd, "altitude");
 
+      // Treat (0.0, 0.0) as missing GPS data (Gulf of Guinea default)
+      if (lat != null && lon != null && lat == 0.0 && lon == 0.0) {
+        lat = null;
+        lon = null;
+        alt = null;
+      }
+
       String desc = textAt(n, "description");
       String title = textAt(n, "title");
 
