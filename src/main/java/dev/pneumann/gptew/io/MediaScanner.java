@@ -69,8 +69,29 @@ public final class MediaScanner {
   }
 
   private Path findSidecar(Path media) {
-    Path candidate = media.resolveSibling(media.getFileName() + ".json");
-    return Files.exists(candidate) ? candidate : null;
+    String mediaName = media.getFileName().toString();
+
+    // Try exact match first: "image.jpg" -> "image.jpg.json"
+    Path candidate = media.resolveSibling(mediaName + ".json");
+    if (Files.exists(candidate)) return candidate;
+
+    // Try truncated extension matches for Google Takeout edge cases
+    // e.g., "image.jpg" -> "image.jp.json" or "image.j.json"
+    String baseName = mediaName;
+    int lastDot = mediaName.lastIndexOf('.');
+    if (lastDot > 0) {
+      String ext = mediaName.substring(lastDot + 1); // e.g., "jpg"
+      baseName = mediaName.substring(0, lastDot);    // e.g., "image"
+
+      // Try progressively shorter extensions: .jpg -> .jp -> .j
+      for (int len = ext.length() - 1; len >= 1; len--) {
+        String truncated = ext.substring(0, len);
+        candidate = media.resolveSibling(baseName + "." + truncated + ".json");
+        if (Files.exists(candidate)) return candidate;
+      }
+    }
+
+    return null;
   }
 
   private String formatSidecarInfo(GoogleSidecar sc) {
@@ -79,7 +100,7 @@ public final class MediaScanner {
       sb.append("time=").append(Instant.ofEpochSecond(sc.photoTakenTimeTimestamp()));
     }
     if (sc.latitude() != null && sc.longitude() != null) {
-      if (sb.length() > 0) sb.append(" ");
+      if (!sb.isEmpty()) sb.append(" ");
       sb.append("gps=(").append(sc.latitude()).append(",").append(sc.longitude()).append(")");
     }
     return sb.toString();
