@@ -18,9 +18,39 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
+/**
+ * The {@code JpegExifWriter} class provides functionality to update EXIF metadata
+ * of JPEG files. This includes updating timestamps, GPS information, and other metadata
+ * based on the information provided in an external {@code GoogleSidecar} object. The metadata
+ * modifications are applied in a lossless manner, preserving image quality.
+ *
+ * This class ensures compatibility with standard EXIF specifications and utilizes
+ * third-party libraries to handle metadata extraction and modification.
+ *
+ * Key features include:
+ * - Updating photo taken, modification, and creation timestamps.
+ * - Embedding GPS coordinates (latitude, longitude, and optional altitude).
+ * - Optionally backing up the original JPEG file before modifications.
+ *
+ * It employs a temporary file mechanism to ensure atomic updates to metadata,
+ * thus preventing corruption or partial writes in case of interruptions.
+ *
+ * The class is designed to be final to prevent inheritance.
+ *
+ * @author Patrik Neumann
+ */
 public final class JpegExifWriter {
   private static final DateTimeFormatter EXIF_FMT = DateTimeFormatter.ofPattern("yyyy:MM:dd HH:mm:ss");
 
+  /**
+   * Updates the EXIF metadata of a JPEG file using information provided in a {@code GoogleSidecar} record.
+   *
+   * @param jpeg the path to the JPEG file whose metadata is to be updated
+   * @param sc the {@code GoogleSidecar} containing information to write into the EXIF metadata, such as timestamps, GPS coordinates, and more
+   * @param backup whether to create a backup of the original JPEG file before applying changes
+   * @throws IOException if an I/O error occurs during reading, writing, or file manipulation
+   * @throws ImagingException if an error occurs while processing the image or its metadata
+   */
   public void apply(Path jpeg, GoogleSidecar sc, boolean backup) throws IOException, ImagingException {
     var metadata = Imaging.getMetadata(jpeg.toFile());
     TiffOutputSet output = null;
