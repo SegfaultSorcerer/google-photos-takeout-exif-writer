@@ -29,6 +29,8 @@ import java.util.stream.Stream;
  * @author Patrik Neumann
  */
 public final class MediaScanner {
+  private static final int MAX_DISPLAYED_SKIPPED_FILES = 50;
+
   private final boolean dryRun;
   private final boolean setFileTimes;
   private final boolean backup;
@@ -70,31 +72,34 @@ public final class MediaScanner {
     // Initialize log file
     initLogFile(root);
 
-    log("=".repeat(80));
-    log("GPTEW - Google Photos Takeout Exif Writer");
-    log("Started: " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
-    log("Mode: " + (dryRun ? "DRY-RUN" : "WRITE"));
-    log("Root: " + root);
-    log("Recursive: " + recursive);
-    log("Set file times: " + setFileTimes);
-    log("Backup: " + backup);
-    log("=".repeat(80));
-    log("");
+    try {
+      log("=".repeat(80));
+      log("GPTEW - Google Photos Takeout Exif Writer");
+      log("Started: " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+      log("Mode: " + (dryRun ? "DRY-RUN" : "WRITE"));
+      log("Root: " + root);
+      log("Recursive: " + recursive);
+      log("Set file times: " + setFileTimes);
+      log("Backup: " + backup);
+      log("=".repeat(80));
+      log("");
 
-    try (Stream<Path> walk = recursive ? Files.walk(root) : Files.list(root)) {
-      walk.filter(Files::isRegularFile)
-          .filter(this::isMediaFile)
-          .forEach(this::processMedia);
-    } catch (IOException e) {
-      System.err.println("Error scanning directory: " + e.getMessage());
-      log("FATAL ERROR: " + e.getMessage());
+      try (Stream<Path> walk = recursive ? Files.walk(root) : Files.list(root)) {
+        walk.filter(Files::isRegularFile)
+            .filter(this::isMediaFile)
+            .forEach(this::processMedia);
+      } catch (IOException e) {
+        System.err.println("Error scanning directory: " + e.getMessage());
+        log("FATAL ERROR: " + e.getMessage());
+        System.exit(2);
+      }
+
+      // Print and log summary
+      printSummary();
+    } finally {
+      // Ensure log file is always closed, even if an exception occurs
       closeLogFile();
-      System.exit(2);
     }
-
-    // Print and log summary
-    printSummary();
-    closeLogFile();
   }
 
   /**
@@ -276,6 +281,16 @@ public final class MediaScanner {
   }
 
   /**
+   * Writes a message to both the log file and the console.
+   *
+   * @param message the message to output
+   */
+  private void logAndPrint(String message) {
+    System.out.println(message);
+    log(message);
+  }
+
+  /**
    * Closes the log file if it is open.
    *
    * This method ensures that the {@code logWriter} is properly closed to release
@@ -314,46 +329,30 @@ public final class MediaScanner {
   private void printSummary() {
     String separator = "=".repeat(80);
 
-    log("");
-    log(separator);
-    log("SUMMARY");
-    log(separator);
-    log("Total files processed: " + totalProcessed);
-    log("Successfully updated:  " + successCount + (dryRun ? " (dry-run)" : ""));
-    log("Skipped (no sidecar): " + skipNoSidecar);
-    log("Skipped (no data):    " + skipNoData);
-    log("Errors:               " + errorCount);
-    log(separator);
-
-    System.out.println();
-    System.out.println(separator);
-    System.out.println("SUMMARY");
-    System.out.println(separator);
-    System.out.println("Total files processed: " + totalProcessed);
-    System.out.println("Successfully updated:  " + successCount + (dryRun ? " (dry-run)" : ""));
-    System.out.println("Skipped (no sidecar): " + skipNoSidecar);
-    System.out.println("Skipped (no data):    " + skipNoData);
-    System.out.println("Errors:               " + errorCount);
-    System.out.println(separator);
+    logAndPrint("");
+    logAndPrint(separator);
+    logAndPrint("SUMMARY");
+    logAndPrint(separator);
+    logAndPrint("Total files processed: " + totalProcessed);
+    logAndPrint("Successfully updated:  " + successCount + (dryRun ? " (dry-run)" : ""));
+    logAndPrint("Skipped (no sidecar): " + skipNoSidecar);
+    logAndPrint("Skipped (no data):    " + skipNoData);
+    logAndPrint("Errors:               " + errorCount);
+    logAndPrint(separator);
 
     // List skipped files if any
     if (!skippedFiles.isEmpty()) {
-      log("");
-      log("SKIPPED FILES (" + skippedFiles.size() + "):");
-      System.out.println();
-      System.out.println("SKIPPED FILES (" + skippedFiles.size() + "):");
+      logAndPrint("");
+      logAndPrint("SKIPPED FILES (" + skippedFiles.size() + "):");
 
-      int displayLimit = 50;
-      for (int i = 0; i < Math.min(skippedFiles.size(), displayLimit); i++) {
-        String file = skippedFiles.get(i);
-        log("  " + file);
-        System.out.println("  " + file);
+      for (int i = 0; i < Math.min(skippedFiles.size(), MAX_DISPLAYED_SKIPPED_FILES); i++) {
+        logAndPrint("  " + skippedFiles.get(i));
       }
 
-      if (skippedFiles.size() > displayLimit) {
-        String more = "  ... and " + (skippedFiles.size() - displayLimit) + " more (see log file for full list)";
-        System.out.println(more);
-        for (int i = displayLimit; i < skippedFiles.size(); i++) {
+      if (skippedFiles.size() > MAX_DISPLAYED_SKIPPED_FILES) {
+        System.out.println("  ... and " + (skippedFiles.size() - MAX_DISPLAYED_SKIPPED_FILES) + " more (see log file for full list)");
+        // Log remaining files to log file only
+        for (int i = MAX_DISPLAYED_SKIPPED_FILES; i < skippedFiles.size(); i++) {
           log("  " + skippedFiles.get(i));
         }
       }
@@ -361,14 +360,11 @@ public final class MediaScanner {
 
     // List error files if any
     if (!errorFiles.isEmpty()) {
-      log("");
-      log("ERROR FILES (" + errorFiles.size() + "):");
-      System.out.println();
-      System.out.println("ERROR FILES (" + errorFiles.size() + "):");
+      logAndPrint("");
+      logAndPrint("ERROR FILES (" + errorFiles.size() + "):");
 
       for (String file : errorFiles) {
-        log("  " + file);
-        System.out.println("  " + file);
+        logAndPrint("  " + file);
       }
     }
 

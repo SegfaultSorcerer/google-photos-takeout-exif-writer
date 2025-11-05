@@ -15,6 +15,8 @@ import org.apache.commons.imaging.formats.tiff.write.TiffOutputDirectory;
  * @author Patrik Neumann
  */
 public final class ExifUtil {
+  private static final double RATIONAL_PRECISION = 100.0;
+
   private ExifUtil(){}
 
   /**
@@ -39,15 +41,15 @@ public final class ExifUtil {
 
   /**
    * Converts a double-precision floating-point number into a `RationalNumber`.
-   * The conversion involves scaling the input by 100 and representing it as
-   * a fraction with a denominator of 100.
+   * The conversion involves scaling the input by the precision factor and representing it as
+   * a fraction with a denominator equal to the precision factor.
    *
    * @param v the double value to be converted to a `RationalNumber`
    * @return a `RationalNumber` representation of the given double value
    */
   public static RationalNumber toRational(double v) {
-    long num = Math.round(v * 100.0);
-    return new RationalNumber((int) num, 100);
+    long num = Math.round(v * RATIONAL_PRECISION);
+    return new RationalNumber((int) num, (int) RATIONAL_PRECISION);
   }
 
   /**

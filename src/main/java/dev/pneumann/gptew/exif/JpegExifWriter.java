@@ -35,12 +35,17 @@ import java.time.format.DateTimeFormatter;
  * It employs a temporary file mechanism to ensure atomic updates to metadata,
  * thus preventing corruption or partial writes in case of interruptions.
  *
+ * <p><b>Note on Timestamps:</b> Google Takeout provides Unix epoch timestamps (UTC).
+ * These are converted to UTC time when written to EXIF. EXIF DateTimeOriginal does not
+ * include timezone information by default, so the times are stored as UTC values.</p>
+ *
  * The class is designed to be final to prevent inheritance.
  *
  * @author Patrik Neumann
  */
 public final class JpegExifWriter {
   private static final DateTimeFormatter EXIF_FMT = DateTimeFormatter.ofPattern("yyyy:MM:dd HH:mm:ss");
+  private static final ZoneId UTC = ZoneId.of("UTC");
 
   /**
    * Updates the EXIF metadata of a JPEG file using information provided in a {@code GoogleSidecar} record.
@@ -62,7 +67,7 @@ public final class JpegExifWriter {
 
     var exifDir = output.getOrCreateExifDirectory();
     if (sc.photoTakenTimeTimestamp() != null) {
-      var ldt = LocalDateTime.ofInstant(Instant.ofEpochSecond(sc.photoTakenTimeTimestamp()), ZoneId.systemDefault());
+      var ldt = LocalDateTime.ofInstant(Instant.ofEpochSecond(sc.photoTakenTimeTimestamp()), UTC);
       var s = EXIF_FMT.format(ldt);
       exifDir.removeField(ExifTagConstants.EXIF_TAG_DATE_TIME_ORIGINAL);
       exifDir.add(ExifTagConstants.EXIF_TAG_DATE_TIME_ORIGINAL, s);
@@ -72,7 +77,7 @@ public final class JpegExifWriter {
       exifDir.add(ExifTagConstants.EXIF_TAG_DATE_TIME_DIGITIZED, s);
     }
     if (sc.modificationTimeTimestamp() != null) {
-      var ldt = LocalDateTime.ofInstant(Instant.ofEpochSecond(sc.modificationTimeTimestamp()), ZoneId.systemDefault());
+      var ldt = LocalDateTime.ofInstant(Instant.ofEpochSecond(sc.modificationTimeTimestamp()), UTC);
       var s = EXIF_FMT.format(ldt);
       // ModifyDate is a baseline TIFF tag
       exifDir.removeField(TiffTagConstants.TIFF_TAG_DATE_TIME);
@@ -90,10 +95,26 @@ public final class JpegExifWriter {
     }
 
     var tmp = jpeg.resolveSibling(jpeg.getFileName().toString() + ".tmp");
-    try (var os = Files.newOutputStream(tmp)) {
-      new ExifRewriter().updateExifMetadataLossless(jpeg.toFile(), os, output);
+    try {
+      try (var os = Files.newOutputStream(tmp)) {
+        new ExifRewriter().updateExifMetadataLossless(jpeg.toFile(), os, output);
+      }
+
+      // Create backup before modifying original
+      if (backup) {
+        Path backupPath = jpeg.resolveSibling(jpeg.getFileName().toString() + ".bak");
+        Files.copy(jpeg, backupPath, StandardCopyOption.REPLACE_EXISTING);
+      }
+
+      Files.move(tmp, jpeg, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    } catch (Exception e) {
+      // Clean up temp file on failure
+      try {
+        Files.deleteIfExists(tmp);
+      } catch (IOException cleanupEx) {
+        // Ignore cleanup errors
+      }
+      throw e;
     }
-    if (backup) Files.copy(jpeg, jpeg.resolveSibling(jpeg.getFileName()+".bak"), StandardCopyOption.REPLACE_EXISTING);
-    Files.move(tmp, jpeg, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
   }
 }
