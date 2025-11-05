@@ -3,104 +3,187 @@ package dev.pneumann.gptew.io;
 import dev.pneumann.gptew.exif.JpegExifWriter;
 import dev.pneumann.gptew.json.GoogleSidecar;
 import dev.pneumann.gptew.json.SidecarParser;
+import me.tongfei.progressbar.ProgressBar;
+import me.tongfei.progressbar.ProgressBarBuilder;
+import me.tongfei.progressbar.ProgressBarStyle;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 /**
  * The MediaScanner class provides functionality to process media files within a directory,
  * analyze associated metadata from sidecar files, and optionally update the media files
- * with metadata. It also includes features for logging and error tracking during the processing workflow.
+ * with metadata. It supports parallel processing, progress reporting, and comprehensive logging.
  *
  * This class supports "dry-run" mode, in which no actual changes are made, and can process files
  * recursively or non-recursively based on the provided input. The processing results are summarized
- * in the console and optionally logged to a file.
+ * in the console and logged using SLF4J.
  *
  * @author Patrik Neumann
  */
 public final class MediaScanner {
+  private static final Logger log = LoggerFactory.getLogger(MediaScanner.class);
   private static final int MAX_DISPLAYED_SKIPPED_FILES = 50;
 
   private final boolean dryRun;
   private final boolean setFileTimes;
   private final boolean backup;
+  private final boolean parallel;
+  private final boolean showProgress;
   private final SidecarParser parser = new SidecarParser();
   private final JpegExifWriter jpegWriter = new JpegExifWriter();
 
-  // Statistics
-  private int totalProcessed = 0;
-  private int successCount = 0;
-  private int skipNoSidecar = 0;
-  private int skipNoData = 0;
-  private int errorCount = 0;
+  // Statistics (thread-safe for parallel processing)
+  private final AtomicInteger totalProcessed = new AtomicInteger(0);
+  private final AtomicInteger successCount = new AtomicInteger(0);
+  private final AtomicInteger skipNoSidecar = new AtomicInteger(0);
+  private final AtomicInteger skipNoData = new AtomicInteger(0);
+  private final AtomicInteger errorCount = new AtomicInteger(0);
   private final List<String> skippedFiles = new ArrayList<>();
   private final List<String> errorFiles = new ArrayList<>();
 
-  // Logging
-  private BufferedWriter logWriter;
-  private Path logFile;
-
-  public MediaScanner(boolean dryRun, boolean setFileTimes, boolean backup) {
+  public MediaScanner(boolean dryRun, boolean setFileTimes, boolean backup, boolean parallel, boolean showProgress) {
     this.dryRun = dryRun;
     this.setFileTimes = setFileTimes;
     this.backup = backup;
+    this.parallel = parallel;
+    this.showProgress = showProgress;
   }
 
   /**
-   * Processes media files in the specified directory and writes metadata to log files.
+   * Processes media files in the specified directory.
    * Files are filtered to include only media files (e.g., JPEG).
    * Depending on the input parameters, the method scans the directory either recursively
-   * or non-recursively.
-   * Sidecar files associated with media files are analyzed for metadata updates. If the
-   * method encounters errors while processing files, it logs these errors and includes
-   * them in the summary report.
+   * or non-recursively, and can process files in parallel for better performance.
    *
    * @param root the root directory to scan for media files
    * @param recursive whether the scan should include subdirectories recursively
    */
   public void process(Path root, boolean recursive) {
-    // Initialize log file
-    initLogFile(root);
+    log.info("=".repeat(80));
+    log.info("GPTEW - Google Photos Takeout Exif Writer");
+    log.info("Mode: {}", dryRun ? "DRY-RUN" : "WRITE");
+    log.info("Root: {}", root);
+    log.info("Recursive: {}", recursive);
+    log.info("Set file times: {}", setFileTimes);
+    log.info("Backup: {}", backup);
+    log.info("Parallel: {}", parallel);
+    log.info("=".repeat(80));
+
+    System.out.println("Scanning for media files...");
 
     try {
-      log("=".repeat(80));
-      log("GPTEW - Google Photos Takeout Exif Writer");
-      log("Started: " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
-      log("Mode: " + (dryRun ? "DRY-RUN" : "WRITE"));
-      log("Root: " + root);
-      log("Recursive: " + recursive);
-      log("Set file times: " + setFileTimes);
-      log("Backup: " + backup);
-      log("=".repeat(80));
-      log("");
-
+      // First, collect all media files
+      List<Path> mediaFiles;
       try (Stream<Path> walk = recursive ? Files.walk(root) : Files.list(root)) {
-        walk.filter(Files::isRegularFile)
+        mediaFiles = walk
+            .filter(Files::isRegularFile)
             .filter(this::isMediaFile)
-            .forEach(this::processMedia);
-      } catch (IOException e) {
-        String errorMsg = "Error scanning directory: " + e.getMessage();
-        System.err.println(errorMsg);
-        log("FATAL ERROR: " + errorMsg);
-        log("Stack trace: " + e.toString());
-        throw new RuntimeException("Failed to scan directory: " + root, e);
+            .toList();
+      }
+
+      if (mediaFiles.isEmpty()) {
+        System.out.println("No media files found.");
+        log.warn("No media files found in directory: {}", root);
+        return;
+      }
+
+      System.out.println("Found " + mediaFiles.size() + " media files to process.");
+      log.info("Found {} media files to process", mediaFiles.size());
+
+      // Process files
+      if (parallel) {
+        processParallel(mediaFiles);
+      } else {
+        processSequential(mediaFiles);
       }
 
       // Print and log summary
       printSummary();
-    } finally {
-      // Ensure log file is always closed, even if an exception occurs
-      closeLogFile();
+
+    } catch (IOException e) {
+      String errorMsg = "Error scanning directory: " + e.getMessage();
+      System.err.println(errorMsg);
+      log.error("FATAL ERROR: {}", errorMsg, e);
+      throw new RuntimeException("Failed to scan directory: " + root, e);
+    }
+  }
+
+  /**
+   * Processes media files sequentially with optional progress reporting.
+   */
+  private void processSequential(List<Path> mediaFiles) {
+    if (showProgress) {
+      try (ProgressBar pb = new ProgressBarBuilder()
+          .setTaskName("Processing")
+          .setInitialMax(mediaFiles.size())
+          .setStyle(ProgressBarStyle.ASCII)
+          .setUpdateIntervalMillis(100)
+          .build()) {
+
+        for (Path media : mediaFiles) {
+          processMedia(media);
+          pb.step();
+        }
+      }
+    } else {
+      mediaFiles.forEach(this::processMedia);
+    }
+  }
+
+  /**
+   * Processes media files in parallel using an ExecutorService with progress reporting.
+   */
+  private void processParallel(List<Path> mediaFiles) {
+    int processors = Runtime.getRuntime().availableProcessors();
+    ExecutorService executor = Executors.newFixedThreadPool(processors);
+
+    log.info("Using {} threads for parallel processing", processors);
+    System.out.println("Using " + processors + " threads for parallel processing");
+
+    if (showProgress) {
+      try (ProgressBar pb = new ProgressBarBuilder()
+          .setTaskName("Processing")
+          .setInitialMax(mediaFiles.size())
+          .setStyle(ProgressBarStyle.ASCII)
+          .setUpdateIntervalMillis(100)
+          .build()) {
+
+        for (Path media : mediaFiles) {
+          executor.submit(() -> {
+            processMedia(media);
+            pb.step();
+          });
+        }
+      }
+    } else {
+      for (Path media : mediaFiles) {
+        executor.submit(() -> processMedia(media));
+      }
+    }
+
+    executor.shutdown();
+    try {
+      if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
+        log.warn("Executor did not terminate in the specified time");
+        executor.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      log.error("Processing was interrupted", e);
+      executor.shutdownNow();
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -120,53 +203,46 @@ public final class MediaScanner {
   /**
    * Processes a media file and its associated sidecar file, applying metadata to the media file
    * if the sidecar contains relevant information. Supports a "dry-run" mode where no changes
-   * are made to the media file, and logs information about operations performed or errors encountered.
-   *
-   * The method checks for the existence of a sidecar file that matches the given media file.
-   * If no sidecar file is found, or if the sidecar lacks relevant metadata, the media file
-   * is skipped. If a valid sidecar file is found, metadata such as timestamps and geolocation
-   * can be applied to the media file, and file timestamps may be updated if configured.
+   * are made to the media file.
    *
    * @param media the {@link Path} to the media file to be processed
    */
   private void processMedia(Path media) {
-    totalProcessed++;
+    totalProcessed.incrementAndGet();
     Path sidecar = findSidecar(media);
 
     if (sidecar == null) {
-      String msg = "SKIP\t" + media + "\t(no sidecar)";
-      System.out.println(msg);
-      log(msg);
-      skipNoSidecar++;
-      skippedFiles.add(media.toString() + " (no sidecar)");
+      log.debug("SKIP: {} (no sidecar)", media);
+      skipNoSidecar.incrementAndGet();
+      synchronized (skippedFiles) {
+        skippedFiles.add(media.toString() + " (no sidecar)");
+      }
       return;
     }
 
     try {
       GoogleSidecar sc = parser.parse(sidecar);
       if (sc.photoTakenTimeTimestamp() == null && sc.latitude() == null) {
-        String msg = "SKIP\t" + media + "\t(sidecar has no relevant data)";
-        System.out.println(msg);
-        log(msg);
-        skipNoData++;
-        skippedFiles.add(media.toString() + " (no relevant data)");
+        log.debug("SKIP: {} (sidecar has no relevant data)", media);
+        skipNoData.incrementAndGet();
+        synchronized (skippedFiles) {
+          skippedFiles.add(media.toString() + " (no relevant data)");
+        }
         return;
       }
 
       String info = formatSidecarInfo(sc);
       if (dryRun) {
-        String msg = "DRY-RUN\t" + media + "\t" + info;
-        System.out.println(msg);
-        log(msg);
-        successCount++;
+        log.info("DRY-RUN: {} - {}", media.getFileName(), info);
+        successCount.incrementAndGet();
       } else {
         // Validate file is writable before attempting modifications
         if (!Files.isWritable(media)) {
-          String msg = "ERROR\t" + media + "\tFile is not writable";
-          System.err.println(msg);
-          log(msg);
-          errorCount++;
-          errorFiles.add(media.toString() + " (not writable)");
+          log.error("ERROR: {} - File is not writable", media);
+          errorCount.incrementAndGet();
+          synchronized (errorFiles) {
+            errorFiles.add(media.toString() + " (not writable)");
+          }
           return;
         }
 
@@ -174,28 +250,20 @@ public final class MediaScanner {
         if (setFileTimes && sc.photoTakenTimeTimestamp() != null) {
           Files.setLastModifiedTime(media, FileTime.from(Instant.ofEpochSecond(sc.photoTakenTimeTimestamp())));
         }
-        String msg = "OK\t" + media + "\t" + info;
-        System.out.println(msg);
-        log(msg);
-        successCount++;
+        log.info("OK: {} - {}", media.getFileName(), info);
+        successCount.incrementAndGet();
       }
     } catch (Exception e) {
-      String msg = "ERROR\t" + media + "\t" + e.getMessage();
-      System.err.println(msg);
-      log(msg);
-      errorCount++;
-      errorFiles.add(media.toString() + " (" + e.getMessage() + ")");
+      log.error("ERROR: {} - {}", media, e.getMessage(), e);
+      errorCount.incrementAndGet();
+      synchronized (errorFiles) {
+        errorFiles.add(media.toString() + " (" + e.getMessage() + ")");
+      }
     }
   }
 
   /**
    * Attempts to find a sidecar file associated with the given media file.
-   * The method searches for a sidecar file in the same directory as the media file with a `.json` extension.
-   * If no exact match is found, it tries progressively truncated extensions to account for edge cases,
-   * such as those generated by Google Takeout. For example, `image.jpg` might have sidecar file variants
-   * like `image.jp.json` or `image.j.json`.
-   *
-   * If no matching sidecar file is found, the method returns {@code null}.
    *
    * @param media the {@link Path} to the media file for which to find a sidecar file
    * @return the {@link Path} to the matching sidecar file if found; {@code null} if no match is found
@@ -208,12 +276,11 @@ public final class MediaScanner {
     if (Files.exists(candidate)) return candidate;
 
     // Try truncated extension matches for Google Takeout edge cases
-    // e.g., "image.jpg" -> "image.jp.json" or "image.j.json"
     String baseName = mediaName;
     int lastDot = mediaName.lastIndexOf('.');
     if (lastDot > 0) {
-      String ext = mediaName.substring(lastDot + 1); // e.g., "jpg"
-      baseName = mediaName.substring(0, lastDot);    // e.g., "image"
+      String ext = mediaName.substring(lastDot + 1);
+      baseName = mediaName.substring(0, lastDot);
 
       // Try progressively shorter extensions: .jpg -> .jp -> .j
       for (int len = ext.length() - 1; len >= 1; len--) {
@@ -228,12 +295,9 @@ public final class MediaScanner {
 
   /**
    * Formats the relevant information from a given {@link GoogleSidecar} object into a string.
-   * The generated string includes the photo's timestamp if available, and its GPS coordinates
-   * (latitude and longitude) if both values are non-null.
    *
-   * @param sc the {@link GoogleSidecar} object containing metadata such as timestamps and geolocation
-   * @return a formatted string with the timestamp and/or GPS coordinates of the photo, or an empty
-   *         string if none of the relevant information is available
+   * @param sc the {@link GoogleSidecar} object containing metadata
+   * @return a formatted string with the timestamp and/or GPS coordinates
    */
   private String formatSidecarInfo(GoogleSidecar sc) {
     StringBuilder sb = new StringBuilder();
@@ -248,145 +312,62 @@ public final class MediaScanner {
   }
 
   /**
-   * Initializes a log file to record processing details. The log file is created in the
-   * specified root directory. If the creation fails, it attempts to create the file in the
-   * current working directory. A timestamp is appended to the log file name to ensure uniqueness.
-   *
-   * @param root the root directory where the log file should be created
-   */
-  private void initLogFile(Path root) {
-    String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
-    String logFileName = "gptew-" + timestamp + ".log";
-
-    // Try to create log file in the root directory, fall back to current dir if that fails
-    try {
-      logFile = root.resolve(logFileName);
-      logWriter = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-      System.out.println("Log file: " + logFile);
-    } catch (IOException e1) {
-      try {
-        logFile = Path.of(logFileName);
-        logWriter = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-        System.out.println("Log file: " + logFile);
-      } catch (IOException e2) {
-        System.err.println("Warning: Could not create log file: " + e2.getMessage());
-        logWriter = null;
-      }
-    }
-  }
-
-  /**
-   * Writes a message to the log file if a writer is available.
-   * If {@code logWriter} is null or an IOException occurs, no action is performed.
-   *
-   * @param message the message to log
-   */
-  private void log(String message) {
-    if (logWriter != null) {
-      try {
-        logWriter.write(message);
-        logWriter.newLine();
-      } catch (IOException e) {
-        // Silently ignore log write errors
-      }
-    }
-  }
-
-  /**
-   * Writes a message to both the log file and the console.
-   *
-   * @param message the message to output
-   */
-  private void logAndPrint(String message) {
-    System.out.println(message);
-    log(message);
-  }
-
-  /**
-   * Closes the log file if it is open.
-   *
-   * This method ensures that the {@code logWriter} is properly closed to release
-   * any resources associated with the log file. If {@code logWriter} is null, no
-   * action is taken. If an {@code IOException} occurs while attempting to close
-   * the log file, the exception is ignored.
-   */
-  private void closeLogFile() {
-    if (logWriter != null) {
-      try {
-        logWriter.close();
-      } catch (IOException e) {
-        // Ignore
-      }
-    }
-  }
-
-  /**
-   * Prints a summary of the media processing results to both the log file and the console.
-   *
-   * The summary includes the following information:
-   * - Total number of files processed.
-   * - Number of successfully updated files, indicating if it was a dry-run.
-   * - Number of skipped files due to missing sidecar files or data.
-   * - Total number of errors encountered during processing.
-   *
-   * If there were skipped files, their details are listed, up to a maximum of 50 files. If
-   * more than 50 skipped files exist, the remaining count is shown, and their details are
-   * only logged to the log file.
-   *
-   * If errors occurred, the list of files with errors is displayed in the summary.
-   *
-   * Additionally, the path to the log file is displayed in the console if a log file was created.
-   * The method concludes by logging a timestamp of when the processing finished.
+   * Prints a summary of the media processing results to the console and logs it.
    */
   private void printSummary() {
     String separator = "=".repeat(80);
 
-    logAndPrint("");
-    logAndPrint(separator);
-    logAndPrint("SUMMARY");
-    logAndPrint(separator);
-    logAndPrint("Total files processed: " + totalProcessed);
-    logAndPrint("Successfully updated:  " + successCount + (dryRun ? " (dry-run)" : ""));
-    logAndPrint("Skipped (no sidecar): " + skipNoSidecar);
-    logAndPrint("Skipped (no data):    " + skipNoData);
-    logAndPrint("Errors:               " + errorCount);
-    logAndPrint(separator);
+    System.out.println();
+    System.out.println(separator);
+    System.out.println("SUMMARY");
+    System.out.println(separator);
+    System.out.println("Total files processed: " + totalProcessed.get());
+    System.out.println("Successfully updated:  " + successCount.get() + (dryRun ? " (dry-run)" : ""));
+    System.out.println("Skipped (no sidecar): " + skipNoSidecar.get());
+    System.out.println("Skipped (no data):    " + skipNoData.get());
+    System.out.println("Errors:               " + errorCount.get());
+    System.out.println(separator);
+
+    log.info("=".repeat(80));
+    log.info("SUMMARY");
+    log.info("Total files processed: {}", totalProcessed.get());
+    log.info("Successfully updated:  {} {}", successCount.get(), dryRun ? "(dry-run)" : "");
+    log.info("Skipped (no sidecar): {}", skipNoSidecar.get());
+    log.info("Skipped (no data):    {}", skipNoData.get());
+    log.info("Errors:               {}", errorCount.get());
 
     // List skipped files if any
     if (!skippedFiles.isEmpty()) {
-      logAndPrint("");
-      logAndPrint("SKIPPED FILES (" + skippedFiles.size() + "):");
+      System.out.println();
+      System.out.println("SKIPPED FILES (" + skippedFiles.size() + "):");
 
       for (int i = 0; i < Math.min(skippedFiles.size(), MAX_DISPLAYED_SKIPPED_FILES); i++) {
-        logAndPrint("  " + skippedFiles.get(i));
+        System.out.println("  " + skippedFiles.get(i));
       }
 
       if (skippedFiles.size() > MAX_DISPLAYED_SKIPPED_FILES) {
-        System.out.println("  ... and " + (skippedFiles.size() - MAX_DISPLAYED_SKIPPED_FILES) + " more (see log file for full list)");
-        // Log remaining files to log file only
-        for (int i = MAX_DISPLAYED_SKIPPED_FILES; i < skippedFiles.size(); i++) {
-          log("  " + skippedFiles.get(i));
-        }
+        System.out.println("  ... and " + (skippedFiles.size() - MAX_DISPLAYED_SKIPPED_FILES)
+            + " more (see log file for full list)");
+      }
+
+      // Log all skipped files
+      log.info("SKIPPED FILES ({}):", skippedFiles.size());
+      for (String file : skippedFiles) {
+        log.info("  {}", file);
       }
     }
 
     // List error files if any
     if (!errorFiles.isEmpty()) {
-      logAndPrint("");
-      logAndPrint("ERROR FILES (" + errorFiles.size() + "):");
+      System.out.println();
+      System.out.println("ERROR FILES (" + errorFiles.size() + "):");
 
       for (String file : errorFiles) {
-        logAndPrint("  " + file);
+        System.out.println("  " + file);
+        log.error("  {}", file);
       }
     }
 
-    if (logFile != null) {
-      System.out.println();
-      System.out.println("Full log written to: " + logFile);
-    }
-
-    log("");
-    log("Finished: " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
-    log(separator);
+    log.info("=".repeat(80));
   }
 }

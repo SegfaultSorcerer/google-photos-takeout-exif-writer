@@ -14,6 +14,10 @@
     <jackson.version>2.17.2</jackson.version>
     <imaging.version>1.0.0-alpha6</imaging.version>
     <metadata.extractor.version>2.19.0</metadata.extractor.version>
+    <picocli.version>4.7.5</picocli.version>
+    <slf4j.version>2.0.9</slf4j.version>
+    <logback.version>1.4.14</logback.version>
+    <progressbar.version>0.10.1</progressbar.version>
   </properties>
 
   <dependencies>
@@ -36,6 +40,32 @@
       <groupId>org.apache.commons</groupId>
       <artifactId>commons-imaging</artifactId>
       <version>${imaging.version}</version>
+    </dependency>
+
+    <!-- CLI -->
+    <dependency>
+      <groupId>info.picocli</groupId>
+      <artifactId>picocli</artifactId>
+      <version>${picocli.version}</version>
+    </dependency>
+
+    <!-- Logging -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <version>${logback.version}</version>
+    </dependency>
+
+    <!-- Progress bar -->
+    <dependency>
+      <groupId>me.tongfei</groupId>
+      <artifactId>progressbar</artifactId>
+      <version>${progressbar.version}</version>
     </dependency>
 
     <!-- Tests -->

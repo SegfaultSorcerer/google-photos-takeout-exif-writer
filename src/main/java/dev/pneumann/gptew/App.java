@@ -1,118 +1,114 @@
 package dev.pneumann.gptew;
 
 import dev.pneumann.gptew.io.MediaScanner;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
+
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.concurrent.Callable;
 
 /**
- * The App class serves as the entry point of the application. It processes command-line
- * arguments, parses them to determine operational behavior, and invokes the
- * MediaScanner to perform the desired actions.
+ * The App class serves as the entry point of the application. It uses the picocli
+ * framework for command-line argument parsing and invokes the MediaScanner to perform
+ * the desired actions.
  *
- * The class provides helper methods for parsing command-line arguments and interpreting
- * boolean configurations from strings. It supports various command-line options that control
- * the behavior of the media scanning process, such as operating in a dry-run mode, setting
- * file times, creating backups, and working on directories recursively.
- *
- * The methods in this class are all static, as the class itself is not intended to be
- * instantiated.
+ * This class implements Callable to integrate with picocli's command execution model.
  *
  * @author Patrik Neumann
  */
-public final class App {
-  /**
-   * The entry point of the application. This method processes command-line arguments
-   * and uses them to initialize a `MediaScanner` for processing input directories
-   * according to the specified options.
-   *
-   * @param args an array of command-line arguments. Expected arguments are:
-   *             --input: the directory to process (required).
-   *             --recursive: whether to process directories recursively (default: true).
-   *             --dry-run: whether to perform a dry-run without making changes (default: true).
-   *             --set-filetimes: whether to set file modification times (default: true).
-   *             --backup: whether to create backups of processed files (default: false).
-   */
+@Command(
+    name = "gptew",
+    mixinStandardHelpOptions = true,
+    version = "GPTEW 0.1.1",
+    description = "Google Photos Takeout EXIF Writer - Restores metadata from Google Photos Takeout exports",
+    sortOptions = false
+)
+public final class App implements Callable<Integer> {
+
+  @Parameters(
+      index = "0",
+      description = "Root directory containing media and sidecar JSON files",
+      paramLabel = "<input-directory>"
+  )
+  private Path input;
+
+  @Option(
+      names = {"-r", "--recursive"},
+      description = "Scan subdirectories recursively (default: ${DEFAULT-VALUE})",
+      defaultValue = "true"
+  )
+  private boolean recursive;
+
+  @Option(
+      names = {"-d", "--dry-run"},
+      description = "Preview mode - no files are modified (default: ${DEFAULT-VALUE})",
+      defaultValue = "true"
+  )
+  private boolean dryRun;
+
+  @Option(
+      names = {"-t", "--set-filetimes"},
+      description = "Update file modification timestamps to match photo capture time (default: ${DEFAULT-VALUE})",
+      defaultValue = "true"
+  )
+  private boolean setFileTimes;
+
+  @Option(
+      names = {"-b", "--backup"},
+      description = "Create .bak backup files before modifying originals (default: ${DEFAULT-VALUE})",
+      defaultValue = "false"
+  )
+  private boolean backup;
+
+  @Option(
+      names = {"-p", "--parallel"},
+      description = "Process files in parallel for better performance (default: ${DEFAULT-VALUE})",
+      defaultValue = "false"
+  )
+  private boolean parallel;
+
+  @Option(
+      names = {"--progress"},
+      description = "Show progress bar during processing (default: ${DEFAULT-VALUE})",
+      defaultValue = "true"
+  )
+  private boolean showProgress;
+
   public static void main(String[] args) {
-    Map<String,String> opts = parseArgs(args);
-    if (!opts.containsKey("--input")) {
-      System.err.println("Usage: java -jar gpmf.jar --input <dir> [--recursive=true|false] [--dry-run=true|false] [--set-filetimes=true|false] [--backup=true|false]");
-      System.exit(2);
-    }
+    int exitCode = new CommandLine(new App()).execute(args);
+    System.exit(exitCode);
+  }
 
-    Path input = Path.of(opts.get("--input"));
-
-    // Validate input directory
-    if (!java.nio.file.Files.exists(input)) {
-      System.err.println("Error: Input directory does not exist: " + input);
-      System.exit(1);
-    }
-    if (!java.nio.file.Files.isDirectory(input)) {
-      System.err.println("Error: Input path is not a directory: " + input);
-      System.exit(1);
-    }
-    if (!java.nio.file.Files.isReadable(input)) {
-      System.err.println("Error: Input directory is not readable: " + input);
-      System.exit(1);
-    }
-
-    boolean recursive = parseBool(opts.getOrDefault("--recursive", "true"));
-    boolean dryRun = parseBool(opts.getOrDefault("--dry-run", "true"));
-    boolean setFileTimes = parseBool(opts.getOrDefault("--set-filetimes", "true"));
-    boolean backup = parseBool(opts.getOrDefault("--backup", "false"));
-
+  @Override
+  public Integer call() {
     try {
-      new MediaScanner(dryRun, setFileTimes, backup).process(input, recursive);
+      // Validate input directory
+      if (!Files.exists(input)) {
+        System.err.println("Error: Input directory does not exist: " + input);
+        return 1;
+      }
+      if (!Files.isDirectory(input)) {
+        System.err.println("Error: Input path is not a directory: " + input);
+        return 1;
+      }
+      if (!Files.isReadable(input)) {
+        System.err.println("Error: Input directory is not readable: " + input);
+        return 1;
+      }
+
+      MediaScanner scanner = new MediaScanner(dryRun, setFileTimes, backup, parallel, showProgress);
+      scanner.process(input, recursive);
+      return 0;
+
     } catch (RuntimeException e) {
       System.err.println("Fatal error during processing: " + e.getMessage());
       if (e.getCause() != null) {
         System.err.println("Caused by: " + e.getCause().getMessage());
       }
-      System.exit(1);
+      return 1;
     }
-  }
-
-  /**
-   * Parses a string input and determines its boolean value. The input is interpreted as
-   * true if it matches "true", "1", or "yes" (case-insensitive). All other input values
-   * are considered false.
-   *
-   * @param s the string to parse as a boolean
-   * @return true if the input string matches "true", "1", or "yes" (case-insensitive);
-   *         false otherwise
-   */
-  private static boolean parseBool(String s) {
-    return "true".equalsIgnoreCase(s) || "1".equals(s) || "yes".equalsIgnoreCase(s);
-  }
-
-  /**
-   * Parses command-line arguments into a map of key-value pairs. Arguments with a
-   * double dash prefix (e.g., --key) are treated as keys. If the argument has an
-   * equal sign (e.g., --key=value), the part after the equal sign is treated as
-   * the value. If no equal sign is present, the value will be the next argument
-   * unless the next argument is also a key. Keys without values default to "true".
-   *
-   * @param args an array of command-line arguments to parse
-   * @return a map containing parsed key-value pairs where keys are the argument names
-   *         prefixed with "--", and values are their associated values or "true" if no
-   *         explicit value is provided
-   */
-  private static Map<String,String> parseArgs(String[] args) {
-    Map<String,String> m = new HashMap<>();
-    for (int i=0; i<args.length; i++) {
-      String a = args[i];
-      if (a.startsWith("--")) {
-        String val = "true";
-        int eq = a.indexOf('=');
-        if (eq > 0) {
-          val = a.substring(eq+1);
-          a = a.substring(0, eq);
-        } else if (i+1 < args.length && !args[i+1].startsWith("--")) {
-          val = args[++i];
-        }
-        m.put(a, val);
-      }
-    }
-    return m;
   }
 }
