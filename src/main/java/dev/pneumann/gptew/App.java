@@ -39,13 +39,37 @@ public final class App {
       System.err.println("Usage: java -jar gpmf.jar --input <dir> [--recursive=true|false] [--dry-run=true|false] [--set-filetimes=true|false] [--backup=true|false]");
       System.exit(2);
     }
+
     Path input = Path.of(opts.get("--input"));
+
+    // Validate input directory
+    if (!java.nio.file.Files.exists(input)) {
+      System.err.println("Error: Input directory does not exist: " + input);
+      System.exit(1);
+    }
+    if (!java.nio.file.Files.isDirectory(input)) {
+      System.err.println("Error: Input path is not a directory: " + input);
+      System.exit(1);
+    }
+    if (!java.nio.file.Files.isReadable(input)) {
+      System.err.println("Error: Input directory is not readable: " + input);
+      System.exit(1);
+    }
+
     boolean recursive = parseBool(opts.getOrDefault("--recursive", "true"));
     boolean dryRun = parseBool(opts.getOrDefault("--dry-run", "true"));
     boolean setFileTimes = parseBool(opts.getOrDefault("--set-filetimes", "true"));
     boolean backup = parseBool(opts.getOrDefault("--backup", "false"));
 
-    new MediaScanner(dryRun, setFileTimes, backup).process(input, recursive);
+    try {
+      new MediaScanner(dryRun, setFileTimes, backup).process(input, recursive);
+    } catch (RuntimeException e) {
+      System.err.println("Fatal error during processing: " + e.getMessage());
+      if (e.getCause() != null) {
+        System.err.println("Caused by: " + e.getCause().getMessage());
+      }
+      System.exit(1);
+    }
   }
 
   /**

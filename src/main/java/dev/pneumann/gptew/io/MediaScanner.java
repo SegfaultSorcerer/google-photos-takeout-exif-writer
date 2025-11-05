@@ -89,9 +89,11 @@ public final class MediaScanner {
             .filter(this::isMediaFile)
             .forEach(this::processMedia);
       } catch (IOException e) {
-        System.err.println("Error scanning directory: " + e.getMessage());
-        log("FATAL ERROR: " + e.getMessage());
-        System.exit(2);
+        String errorMsg = "Error scanning directory: " + e.getMessage();
+        System.err.println(errorMsg);
+        log("FATAL ERROR: " + errorMsg);
+        log("Stack trace: " + e.toString());
+        throw new RuntimeException("Failed to scan directory: " + root, e);
       }
 
       // Print and log summary
@@ -158,6 +160,16 @@ public final class MediaScanner {
         log(msg);
         successCount++;
       } else {
+        // Validate file is writable before attempting modifications
+        if (!Files.isWritable(media)) {
+          String msg = "ERROR\t" + media + "\tFile is not writable";
+          System.err.println(msg);
+          log(msg);
+          errorCount++;
+          errorFiles.add(media.toString() + " (not writable)");
+          return;
+        }
+
         jpegWriter.apply(media, sc, backup);
         if (setFileTimes && sc.photoTakenTimeTimestamp() != null) {
           Files.setLastModifiedTime(media, FileTime.from(Instant.ofEpochSecond(sc.photoTakenTimeTimestamp())));

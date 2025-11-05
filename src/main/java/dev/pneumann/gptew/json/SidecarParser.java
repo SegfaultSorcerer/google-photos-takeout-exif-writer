@@ -29,6 +29,10 @@ import java.nio.file.Path;
 public final class SidecarParser {
   private static final ObjectMapper M = new ObjectMapper();
 
+  /** GPS coordinates (0.0, 0.0) indicate missing data (Gulf of Guinea default). */
+  private static final double INVALID_GPS_LAT = 0.0;
+  private static final double INVALID_GPS_LON = 0.0;
+
   /**
    * Parses a JSON file containing metadata associated with media files
    * and creates a {@link GoogleSidecar} object from the extracted data.
@@ -56,7 +60,7 @@ public final class SidecarParser {
       Double alt = doubleAt(gd, "altitude");
 
       // Treat (0.0, 0.0) as missing GPS data (Gulf of Guinea default)
-      if (lat != null && lon != null && lat == 0.0 && lon == 0.0) {
+      if (lat != null && lon != null && lat == INVALID_GPS_LAT && lon == INVALID_GPS_LON) {
         lat = null;
         lon = null;
         alt = null;
